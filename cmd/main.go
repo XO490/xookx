@@ -53,7 +53,7 @@ func createConfig() {
 	data := "app:\n" +
 		"  debug: false\n\n" +
 		"headers:\n" +
-		"  head: https://www.okex.com\n" +
+		"  head: https://www.okx.com\n" +
 		"  content-type: application/json\n" +
 		"  user-agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.88 Safari/537.36 Vivaldi/5.1.2567.39\n"
 
@@ -96,7 +96,7 @@ func getNumOfBuild() string {
 
 func apiGetCurrency(index string) string {
 	/*
-		example url: https://www.okex.com/api/v5/market/index-components?index=BTC-USDT
+		example url: https://www.okx.com/api/v5/market/index-components?index=BTC-USDT
 		api documentation: https://www.okx.com/docs-v5/en/#rest-api-market-data-get-index-components
 	*/
 	var url = CONFIG.Headers.head + "/api/v5/market/index-components?index=" + index
@@ -216,5 +216,5 @@ func buildApp(release bool, version string, buildNum string) {
 }
 
 func main() {
-	buildApp(true, "0.1.3", "71")
+	buildApp(true, "0.1.3", "73")
 }
