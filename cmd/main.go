@@ -1,65 +1,73 @@
 package main
 
 import (
+	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/hajimehoshi/oto"
-	"github.com/spf13/viper"
-	"github.com/tosone/minimp3"
-	"io/ioutil"
+	"github.com/hajimehoshi/go-mp3"
+	"github.com/hajimehoshi/oto/v2"
+	"gopkg.in/yaml.v2"
+	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
+	"xoOKX/cmd/text"
 )
 
 type Config struct {
 	App struct {
-		debug bool
+		Debug   bool   `yaml:"debug"`
+		Timeout int    `yaml:"timeout"`
+		Proxy   string `yaml:"proxy"`
 	}
 	Headers struct {
-		head        string
-		contentType string
-		userAgent   string
+		Host        string `yaml:"host"`
+		ContentType string `yaml:"content-type"`
+		UserAgent   string `yaml:"user-agent"`
+		ApiUrl      string `yaml:"api-url"`
 	}
 }
 
-var CONFIG = Config{}
-var DEBUG = true
-var PWD string
+var (
+	config   = Config{}
+	debug    = true
+	version  = "0.1.4"
+	pwd      = filepath.Dir(os.Args[0])
+	yamlName = "config.yaml"
+)
 
 func readConfig() {
-	pwd, err := filepath.Abs(filepath.Dir(os.Args[0]))
-	checkErr(err, DEBUG)
-	PWD = pwd
-
-	y := viper.New()
-	y.SetConfigFile(PWD + "/config.yaml")
-	err = y.ReadInConfig()
+	file, err := os.ReadFile(filepath.Join(pwd, yamlName))
 	if err != nil {
-		createConfig()
+		log.Printf("[Error] readConfig ReadFile> %v\n", err)
 	}
 
-	CONFIG.Headers.head = y.GetString("headers.head")
-	CONFIG.Headers.contentType = y.GetString("headers.content-type")
-	CONFIG.Headers.userAgent = y.GetString("headers.user-agent")
-	CONFIG.App.debug = y.GetBool("app.debug")
-	DEBUG = CONFIG.App.debug
+	err = yaml.Unmarshal(file, &config)
+	if err != nil {
+		log.Printf("[Error] readConfig Unmarshal> %v\n", err)
+	}
 }
 
 func createConfig() {
 	data := "app:\n" +
-		"  debug: false\n\n" +
+		"  debug: false\n" +
+		"  timeout: 5\n" +
+		"#  proxy: \"http://195.154.43.182:58099\"\n" +
+		"#  proxy url format - http://user:password@host:port\n\n" +
 		"headers:\n" +
-		"  head: https://www.okx.com\n" +
-		"  content-type: application/json\n" +
-		"  user-agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.88 Safari/537.36 Vivaldi/5.1.2567.39\n"
+		"  host: \"https://www.okx.com\"\n" +
+		"  content-type: \"application/json\"\n" +
+		"  user-agent: \"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.88 Safari/537.36 Vivaldi/5.1.2567.39\"\n" +
+		"  api-url: \"/api/v5/market/index-components?index=\"\n"
 
-	err := ioutil.WriteFile(PWD+"/config.yaml", []byte(data), 0755)
-	checkErr(err, DEBUG)
-	fmt.Println("Config created in path: ", PWD)
+	err := os.WriteFile(yamlName, []byte(data), 0755)
+	checkErr(err, debug)
+	fmt.Println("Config created.")
 }
 
 func checkErr(err error, debug bool) {
@@ -73,90 +81,91 @@ func checkErr(err error, debug bool) {
 	}
 }
 
-func getNumOfBuild() string {
-	//pwd, err := filepath.Abs(filepath.Dir(os.Args[0]))
-	//checkErr(err, DEBUG)
-
-	build, err := os.ReadFile(PWD + "/.build")
-	if err != nil {
-		err := os.WriteFile(PWD+"/.build", []byte("0"), 0755)
-		checkErr(err, DEBUG)
-
-		build, err = os.ReadFile(PWD + "/.build")
-		checkErr(err, DEBUG)
-	}
-
-	oldbuild, _ := strconv.Atoi(string(build))
-	newbuild := strconv.Itoa(oldbuild + 1)
-
-	err = os.WriteFile(PWD+"/.build", []byte(newbuild), 0755)
-	checkErr(err, DEBUG)
-	return newbuild
-}
-
 func apiGetCurrency(index string) string {
 	/*
 		example url: https://www.okx.com/api/v5/market/index-components?index=BTC-USDT
 		api documentation: https://www.okx.com/docs-v5/en/#rest-api-market-data-get-index-components
 	*/
-	var url = CONFIG.Headers.head + "/api/v5/market/index-components?index=" + index
-	req, err := http.Get(url)
-	checkErr(err, DEBUG)
+	defer func() {
+		if err := recover(); err != nil {
+			return
+		}
+	}()
 
-	req.Header.Add("host", CONFIG.Headers.head)
-	req.Header.Add("content-type", CONFIG.Headers.contentType)
-	req.Header.Add("user-agent", CONFIG.Headers.userAgent)
+	var urlApi = config.Headers.Host + config.Headers.ApiUrl + index
+	//var urlApi = config.Headers.Host + "/api/v5/market/index-components?index=" + index
+	request, err := http.NewRequest(http.MethodGet, urlApi, nil)
+	checkErr(err, debug)
+
+	request.Header.Set("Host", config.Headers.Host)
+	request.Header.Set("Content-Type", config.Headers.ContentType)
+	request.Header.Set("User-Agent", config.Headers.UserAgent)
+
+	client := &http.Client{
+		Timeout: time.Second * time.Duration(config.App.Timeout),
+	}
+
+	if config.App.Proxy != "" {
+		proxyUrl, _ := url.Parse(config.App.Proxy)
+		proxy := &http.Transport{
+			Proxy:           http.ProxyURL(proxyUrl),
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+
+		client.Transport = proxy
+	}
+
+	response, _ := client.Do(request)
 
 	var jsonObj map[string]interface{}
-	err = json.NewDecoder(req.Body).Decode(&jsonObj)
-	checkErr(err, false)
+	if response != nil {
+		err = json.NewDecoder(response.Body).Decode(&jsonObj)
+		checkErr(err, debug)
 
-	if jsonObj["code"] == "0" {
-		lastFloat, _ := strconv.ParseFloat(jsonObj["data"].(map[string]interface{})["last"].(string), 32)
-		last := fmt.Sprintf("%.2f", lastFloat)
-
-		return last
-	} else {
-		return "</>: " + jsonObj["code"].(string)
+		if jsonObj["code"] == "0" {
+			lastFloat, _ := strconv.ParseFloat(jsonObj["data"].(map[string]interface{})["last"].(string), 32)
+			last := fmt.Sprintf("%.2f", lastFloat)
+			return last
+		} else {
+			return "</>: " + jsonObj["code"].(string)
+		}
 	}
-}
-
-func help() {
-	fmt.Print("xoOKX\n" +
-		VERSION + "\n" +
-		"---------\n" +
-		"usage:\n" +
-		"\t--index=BTC-USDT\t| return 'last' > https://www.okx.com/docs-v5/en/#rest-api-market-data-get-index-components\n" +
-		"\t--sound\t\t\t| default sound notification: --sound (use --sound OR --custom-sound)\n" +
-		"\t--custom-sound\t\t| your custom sound notification: --custom-sound=btc.mp3 (use --sound OR --custom-sound)\n" +
-		"\t--config\t\t\t| create config.yaml file\n" +
-		"\nerror-code </>:\t> https://www.okx.com/docs-v5/en/#error-code\n" +
-		"feedback:\t> https://t.me/xo490")
+	return "--"
 }
 
 func notification(filename string) {
-	//pwd, err := filepath.Abs(filepath.Dir(os.Args[0]))
-	//checkErr(err, DEBUG)
+	fileBytes, err := os.ReadFile("media/" + filename)
+	checkErr(err, debug)
 
-	file, err := ioutil.ReadFile(PWD + "/media/" + filename)
-	checkErr(err, DEBUG)
+	fileBytesReader := bytes.NewReader(fileBytes)
 
-	dec, data, err := minimp3.DecodeFull(file)
-	checkErr(err, DEBUG)
+	decodedMp3, err := mp3.NewDecoder(fileBytesReader)
+	if err != nil {
+		panic("mp3.NewDecoder failed: " + err.Error())
+	}
 
-	context, err := oto.NewContext(dec.SampleRate, dec.Channels, 2, 1024)
-	checkErr(err, DEBUG)
+	samplingRate := 44100
+	numOfChannels := 2
+	audioBitDepth := 2
 
-	var player = context.NewPlayer()
-	player.Write(data)
+	otoCtx, readyChan, err := oto.NewContext(samplingRate, numOfChannels, audioBitDepth)
+	if err != nil {
+		panic("oto.NewContext failed: " + err.Error())
+	}
+	<-readyChan
 
-	<-time.After(time.Second)
+	player := otoCtx.NewPlayer(decodedMp3)
 
-	defer context.Close()
-	defer dec.Close()
+	player.Play()
+
+	for player.IsPlaying() {
+		time.Sleep(time.Millisecond)
+	}
 
 	err = player.Close()
-	checkErr(err, DEBUG)
+	if err != nil {
+		panic("player.Close failed: " + err.Error())
+	}
 }
 
 func getArgs() {
@@ -164,10 +173,10 @@ func getArgs() {
 	if len(args) < 2 {
 		help()
 	} else {
-		index := flag.String("index", "", "--index=BTC-USDT")
-		sound := flag.Bool("sound", false, "--sound")
-		customSound := flag.String("custom-sound", "", "--custom-sound=up.mp3")
-		config := flag.Bool("config", false, "--config")
+		index := flag.String("index", "", text.Index)
+		sound := flag.Bool("sound", false, text.Sound)
+		customSound := flag.String("custom-sound", "", text.CustomSound)
+		config := flag.Bool("config", false, text.Config)
 
 		flag.Parse()
 
@@ -189,32 +198,20 @@ func getArgs() {
 	}
 }
 
-/*
-	Building app
-*/
-
-var VERSION string
-
-func buildApp(release bool, version string, buildNum string) {
-	readConfig()
-
-	if release {
-		if buildNum != "" {
-			VERSION = version + " | build " + buildNum + " | release"
-		} else {
-			fmt.Println("For RELEASE=true buildNum can't be empty")
-			os.Exit(1)
-		}
-	}
-
-	if release != true {
-		buildNum = getNumOfBuild()
-		VERSION = version + " | build " + getNumOfBuild() + " | debug"
-	}
-
-	getArgs()
+func help() {
+	fmt.Print("xoOKX\n" +
+		version + "\n" +
+		"----\n" +
+		"usage of " + os.Args[0] + ":\n" +
+		"--index=BTC-USDT\n\t" + text.Index +
+		"\n\n--sound\n\t" + text.Sound +
+		"\n\n--custom-sound\n\t" + text.CustomSound +
+		"\n\n--config\n\t" + text.Config +
+		"\n\nerror-code </>: " + text.ErrorCode +
+		"\nfeedback: " + text.Contact)
 }
 
 func main() {
-	buildApp(true, "0.1.3", "73")
+	readConfig()
+	getArgs()
 }
